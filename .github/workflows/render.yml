@@ -1,0 +1,46 @@
+name: Blender 4K Render
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "neon_raid.py"
+      - ".github/workflows/render.yml"
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [bolt, bug, spark, core]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Blender 4.2 LTS
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libxi6 libxxf86vm1 libxfixes3 libxrender1 libgl1 libxkbcommon0 libsm6 libegl1 imagemagick
+          wget -q https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz
+          tar -xf blender-4.2.3-linux-x64.tar.xz
+          ./blender-4.2.3-linux-x64/blender --version
+
+      - name: Render ${{ matrix.model }}
+        env:
+          OUT_DIR: renders
+          SAMPLES: "48"
+        run: ./blender-4.2.3-linux-x64/blender -b -P neon_raid.py -- ${{ matrix.model }}
+
+      - name: Contact sheet (все 6 сторон на одном листе)
+        continue-on-error: true
+        run: |
+          cd renders
+          M=${{ matrix.model }}
+          montage ${M}_front_4K.png ${M}_back_4K.png ${M}_left_4K.png ${M}_right_4K.png ${M}_top_4K.png ${M}_three_quarter_4K.png \
+            -tile 3x2 -geometry 1280x720+0+0 -background '#05030c' ${M}_4K_all_sides.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-raid-${{ matrix.model }}
+          path: renders/
