@@ -1,0 +1,50 @@
+name: Publish renders to repo
+
+on:
+  workflow_run:
+    workflows: ["Blender 4K Render"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID сборки Blender 4K Render"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: neon-raid-*
+          path: dl
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id || inputs.run_id }}
+
+      - name: Convert and copy
+        run: |
+          sudo apt-get install -y -qq imagemagick
+          for d in dl/neon-raid-*; do
+            m=${d#dl/neon-raid-}
+            mkdir -p renders/$m
+            for f in $d/*.png; do
+              convert "$f" -quality 90 renders/$m/$(basename "${f%.png}").jpg
+            done
+            cp $d/*.glb $d/*.blend renders/$m/ 2>/dev/null || true
+          done
+          ls -laR renders
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add renders
+          git commit -m "Add 4K renders" || exit 0
+          git pull --rebase
+          git push
