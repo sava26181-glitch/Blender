@@ -1,0 +1,91 @@
+name: Neon Raid iOS
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "game/**"
+      - ".github/workflows/game.yml"
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VER: "4.3"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot
+        run: |
+          wget -q https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          unzip -q Godot_v${GODOT_VER}-stable_linux.x86_64.zip
+          mv Godot_v${GODOT_VER}-stable_linux.x86_64 godot
+      - name: Import assets
+        run: |
+          timeout 300 ./godot --headless --path game --editor --quit || true
+          timeout 300 ./godot --headless --path game --editor --quit || true
+          ls game/.godot/imported | head -20
+      - name: Autotest (игра играет сама 40 сек)
+        run: |
+          timeout 180 ./godot --headless --path game 2>&1 | tee test.log || true
+          if grep -E "SCRIPT ERROR|Parse Error|Failed to load script" test.log; then echo "::error::Ошибки в скрипте"; exit 1; fi
+          grep -q "AUTOTEST OK" test.log || { echo "::error::Автотест не дошёл до конца"; exit 1; }
+
+  ios:
+    needs: test
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot + iOS templates
+        run: |
+          curl -sL -o godot.zip https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_macos.universal.zip
+          unzip -q godot.zip
+          curl -sL -o templates.tpz https://github.com/godotengine/godot/releases/download/${GODOT_VER}-stable/Godot_v${GODOT_VER}-stable_export_templates.tpz
+          TDIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VER}.stable"
+          mkdir -p "$TDIR"
+          unzip -q -j templates.tpz templates/ios.zip templates/version.txt -d "$TDIR"
+          ls -la "$TDIR"
+      - name: Export Xcode project
+        run: |
+          GODOT="$PWD/Godot.app/Contents/MacOS/Godot"
+          cd game
+          timeout 300 "$GODOT" --headless --editor --quit || true
+          mkdir -p build/ios
+          "$GODOT" --headless --export-release "iOS" build/ios/NeonRaid.ipa 2>&1 | tee export.log
+          ls -la build/ios
+      - name: Build unsigned IPA
+        run: |
+          cd game/build/ios
+          PROJ=$(ls -d *.xcodeproj | head -1)
+          NAME="${PROJ%.xcodeproj}"
+          echo "project: $PROJ"
+          xcodebuild -project "$PROJ" -scheme "$NAME" -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" build -quiet \
+          || xcodebuild -project "$PROJ" -configuration Release -sdk iphoneos SYMROOT="$PWD/sym" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" build -quiet
+          APP=$(find . -path "*Release-iphoneos/*.app" -maxdepth 6 -type d | head -1)
+          echo "app: $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry NeonRaid.ipa Payload
+          ls -la NeonRaid.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeonRaid-ios
+          path: game/build/ios/NeonRaid.ipa
+      - name: Put IPA into repo
+        run: |
+          mkdir -p builds
+          cp game/build/ios/NeonRaid.ipa builds/NeonRaid.ipa
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add builds/NeonRaid.ipa
+          git commit -m "iOS build: NeonRaid.ipa" || exit 0
+          git pull --rebase
+          git push
